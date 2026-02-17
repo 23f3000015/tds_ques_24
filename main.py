@@ -2,12 +2,13 @@ from fastapi import FastAPI
 import requests
 import sqlite3
 from datetime import datetime
-from openai import OpenAI
+import os
 
 app = FastAPI()
 
-client = OpenAI(api_key="YOUR_OPENAI_API_KEY")
-
+# ---------------------------
+# Initialize Database
+# ---------------------------
 def init_db():
     conn = sqlite3.connect("pipeline.db")
     cursor = conn.cursor()
@@ -26,31 +27,50 @@ def init_db():
 
 init_db()
 
+# ---------------------------
+# AI PIPE ANALYSIS FUNCTION
+# ---------------------------
 def analyze_text(text):
     try:
-        prompt = f"""
-        Analyze this in 2 sentences and classify sentiment as optimistic, pessimistic, or balanced:
-        {text}
-        """
+        url = "https://aipipe.org/openai/v1/chat/completions"
 
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}]
-        )
+        headers = {
+            "Authorization": f"Bearer {os.getenv('AI_PIPE_TOKEN')}",
+            "Content-Type": "application/json"
+        }
 
-        result = response.choices[0].message.content
+        payload = {
+            "model": "gpt-4o-mini",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"Analyze this in 2 sentences and classify sentiment as optimistic, pessimistic, or balanced: {text}"
+                }
+            ]
+        }
+
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
+
+        if response.status_code != 200:
+            return f"AI API Error: {response.text}", "unknown"
+
+        result = response.json()
+        content = result["choices"][0]["message"]["content"]
 
         sentiment = "balanced"
-        if "optimistic" in result.lower():
+        if "optimistic" in content.lower():
             sentiment = "optimistic"
-        elif "pessimistic" in result.lower():
+        elif "pessimistic" in content.lower():
             sentiment = "pessimistic"
 
-        return result, sentiment
+        return content, sentiment
 
     except Exception as e:
         return f"AI Error: {str(e)}", "unknown"
 
+# ---------------------------
+# PIPELINE ENDPOINT
+# ---------------------------
 @app.post("/pipeline")
 def run_pipeline(data: dict):
 
@@ -62,6 +82,9 @@ def run_pipeline(data: dict):
 
     for i in range(3):
 
+        # ---------------------------
+        # 1. FETCH UUID
+        # ---------------------------
         try:
             response = requests.get("https://httpbin.org/uuid", timeout=5)
             uuid = response.json()["uuid"]
@@ -69,12 +92,17 @@ def run_pipeline(data: dict):
             errors.append(f"API error: {str(e)}")
             continue
 
-        try:
-            analysis, sentiment = analyze_text(uuid)
-        except Exception as e:
-            errors.append(f"AI error: {str(e)}")
-            continue
+        # ---------------------------
+        # 2. AI ANALYSIS
+        # ---------------------------
+        analysis, sentiment = analyze_text(uuid)
 
+        if sentiment == "unknown":
+            errors.append("AI processing failed")
+
+        # ---------------------------
+        # 3. STORE IN DATABASE
+        # ---------------------------
         try:
             conn = sqlite3.connect("pipeline.db")
             cursor = conn.cursor()
@@ -101,7 +129,10 @@ def run_pipeline(data: dict):
             "timestamp": timestamp
         })
 
-    print(f"Notification sent to: 23f3000015@ds.study.iitm.ac.in")
+    # ---------------------------
+    # 4. MOCK NOTIFICATION
+    # ---------------------------
+    print("Notification sent to: 23f3000015@ds.study.iitm.ac.in")
 
     return {
         "items": results,
